@@ -8,6 +8,7 @@ import os
 
 
 def get_env_api_key(provider: str) -> str | None:
+    """根据 provider 名，从环境变量里找对应的 API Key。"""
     # Anthropic provider
     if provider == "anthropic":
         # return "9d96c1c9f4cb41d1aa6f55b0641478bc.stGL7zCVisZi0I68"

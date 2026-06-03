@@ -26,6 +26,7 @@ from ..types import (
 
 
 def now_ms() -> int:
+    """ 获取当前时间戳（毫秒） """
     return int(time.time() * 1000)
 
 
@@ -42,7 +43,7 @@ def parse_partial_json(raw: str) -> dict[str, Any]:
 
 
 def empty_assistant_message(api: str, provider: str, model: str) -> AssistantMessage:
-    """创建一个最小可用的 AssistantMessage，用于边流式边填充。"""
+    """创建一个空的 AssistantMessage，用于边流式边填充。"""
     return AssistantMessage(
         content=[],
         api=api,
@@ -53,20 +54,34 @@ def empty_assistant_message(api: str, provider: str, model: str) -> AssistantMes
     )
 
 
+
+#########################################################
+# 做不同模型厂商的格式适配
+# 项目内部统一使用 Context、UserMessage、AssistantMessage、ToolCall、ToolResultMessage 这些类型
+#########################################################
+
 def to_openai_messages(context: Context) -> list[dict[str, Any]]:
     """把统一 Message 转成 OpenAI Chat Completions 的 messages。"""
+
+    # 存储解析结果
     out: list[dict[str, Any]] = []
+
+    # 1) system prompt -> {"role": "system"}
     if context.system_prompt:
         out.append({"role": "system", "content": context.system_prompt})
     for msg in context.messages:
+        # 用户文本/图片 -> OpenAI 的 user content
         if isinstance(msg, UserMessage):
+            # 
             if isinstance(msg.content, str):
                 out.append({"role": "user", "content": msg.content})
             else:
                 parts: list[dict[str, Any]] = []
                 for part in msg.content:
+                    # 文本
                     if isinstance(part, TextContent):
                         parts.append({"type": "text", "text": part.text})
+                    # 图片
                     elif isinstance(part, ImageContent):
                         parts.append(
                             {
@@ -75,6 +90,7 @@ def to_openai_messages(context: Context) -> list[dict[str, Any]]:
                             }
                         )
                 out.append({"role": "user", "content": parts})
+        # assistant 文本和 tool calls -> OpenAI 的 assistant 消息
         elif isinstance(msg, AssistantMessage):
             text = "".join(b.text for b in msg.content if isinstance(b, TextContent))
             tool_calls = [b for b in msg.content if isinstance(b, ToolCall)]
@@ -159,7 +175,7 @@ def to_anthropic_messages(context: Context) -> list[dict[str, Any]]:
             text = "\n".join(p.text for p in msg.content if isinstance(p, TextContent))
             out.append(
                 {
-                    "role": "user",
+                    "role": "user", # Anthropic 把工具结果当成用户消息，且内容里嵌套一个 tool_result 块
                     "content": [
                         {
                             "type": "tool_result",

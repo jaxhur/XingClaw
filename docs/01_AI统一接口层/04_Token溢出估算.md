@@ -1,19 +1,8 @@
-# 04 Token 溢出估算
+**Token 溢出估算**：`src/ai/overflow.py`
 
-> 对应源码：`src/ai/overflow.py`
+- `overflow.py`：**估算当前已占有的上下文，判断还能不能继续装，删减or压缩**
 
-## 先不看代码——用"行李箱容量"来理解
 
-你出远门要带行李箱，箱子有个最大容量（比如 20 寸能装 36 升）。你往里塞衣服、洗漱包、电脑，塞着塞着就要想：还能不能再塞？如果已经塞了 90% 了，再塞一双鞋可能就合不上了。
-
-AI 模型也有一个"行李箱"——叫做**上下文窗口（Context Window）**。它能记住的内容是有限的：
-
-- Claude Sonnet 4.5 的窗口是 200,000 token（约 50 万汉字）
-- GPT-4o mini 的窗口是 128,000 token
-
-你跟 AI 对话越长，"行李箱"就越满。塞不下了就必须"丢掉一些旧衣服"（删减历史消息）或者"把衣服压缩打包"（用摘要替代）。
-
-`overflow.py` 的工作就是：**估算当前行李箱用了多少容量，判断还能不能继续装。**
 
 ## 概念图
 
@@ -60,11 +49,17 @@ flowchart TD
     Result -->|否| No
 ```
 
+
+
 ## 源码精读
 
-整个文件不到 100 行，但每个函数都很精炼。
+
 
 ### 核心常量
+
+
+
+**为什么是"粗算"？** 因为真正的 token 计算需要用模型专用的分词器（tokenizer），不同模型的分词方式不一样。但在"判断要不要压缩"这个场景下，用字符数除以 4 就够用了——偏差在可接受范围内，而且几乎不消耗性能。
 
 ```python
 CHARS_PER_TOKEN = 4              # 粗略估算：平均 4 个字符 ≈ 1 个 token
@@ -72,9 +67,17 @@ IMAGE_TOKEN_ESTIMATE = 1000      # 一张图片粗算 1000 token
 TOOL_SCHEMA_TOKEN_ESTIMATE = 200 # 一个工具的 JSON Schema 粗算 200 token
 ```
 
-**为什么是"粗算"？** 因为真正的 token 计算需要用模型专用的分词器（tokenizer），不同模型的分词方式不一样。但在"判断要不要压缩"这个场景下，用字符数除以 4 就够用了——偏差在可接受范围内，而且几乎不消耗性能。
+
+
+
 
 ### 估算单条消息的 token
+
+估算单条消息的 token
+
+- 入参：一条 `Message`（可能是 UserMessage / AssistantMessage / ToolResultMessage）
+- 处理：根据消息类型遍历内容块，累加字符数
+- 出参：`int`，估算的 token 数
 
 ```python
 def estimate_message_tokens(msg: Message) -> int:
@@ -114,11 +117,7 @@ def estimate_message_tokens(msg: Message) -> int:
     return max(1, total // CHARS_PER_TOKEN)
 ```
 
-**代码逻辑拆解**：
 
-- 入参：一条 `Message`（可能是 UserMessage / AssistantMessage / ToolResultMessage）
-- 处理：根据消息类型遍历内容块，累加字符数
-- 出参：`int`，估算的 token 数
 
 ### 估算整个上下文的 token
 
@@ -142,7 +141,11 @@ def estimate_context_tokens(
     return total
 ```
 
+
+
 ### 判断是否溢出
+
+**`safety_margin` 为什么是 0.95？** 因为上下文窗口要同时容纳"输入"和"输出"。如果输入就占了 100%，AI 就没有空间写回复了。留 5% 是一个保守的余量。
 
 ```python
 def is_context_overflow(
@@ -165,7 +168,7 @@ def overflow_ratio(model: Model, context: Context) -> float:
     return estimated / model.context_window
 ```
 
-**`safety_margin` 为什么是 0.95？** 因为上下文窗口要同时容纳"输入"和"输出"。如果输入就占了 100%，AI 就没有空间写回复了。留 5% 是一个保守的余量。
+
 
 ## 这个模块在哪里被使用？
 

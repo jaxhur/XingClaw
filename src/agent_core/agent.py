@@ -29,16 +29,19 @@ from .types import (
 
 
 def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
+    """ 默认的消息转换函数：AgentMessage -> Message。"""
     return messages
 
 
 async def _maybe_await(value: Any) -> Any:
+    """ 如果值是协程或未来对象，则等待它完成。 """
     if asyncio.isfuture(value) or asyncio.iscoroutine(value):
         return await value
     return value
 
 
 def _resolve_reasoning(thinking_level: str) -> ThinkingLevel | None:
+    """ 根据思考级别字符串返回对应的 ThinkingLevel。 """
     mapping = {
         "off": None,
         "minimal": "minimal",
@@ -50,14 +53,18 @@ def _resolve_reasoning(thinking_level: str) -> ThinkingLevel | None:
     return mapping.get(thinking_level)  # type: ignore[return-value]
 
 
+
 @dataclass
 class AgentOptions:
-    model: Model
-    system_prompt: str = ""
-    tools: list[AgentTool] = field(default_factory=list)
-    messages: list[AgentMessage] = field(default_factory=list)
-    thinking_level: str = "off"
-    tool_execution: ToolExecutionMode = "parallel"
+    """ Agent配置 """
+    model: Model # 使用的模型
+    system_prompt: str = "" # 系统提示词
+    tools: list[AgentTool] = field(default_factory=list) # 可用工具列表
+    messages: list[AgentMessage] = field(default_factory=list) # 历史消息列表
+    thinking_level: str = "off" # 思考级别，默认为 "off"，即不使用思考块
+    tool_execution: ToolExecutionMode = "parallel" # 工具执行方式：并行 or 串行
+
+    # 可选的回调函数
     convert_to_llm: Callable[[list[AgentMessage]], list[Message] | Awaitable[list[Message]]] = _default_convert_to_llm
     transform_context: Optional[
         Callable[[list[AgentMessage], Any | None], list[AgentMessage] | Awaitable[list[AgentMessage]]]
@@ -73,7 +80,9 @@ class AgentOptions:
 
 
 class Agent:
+    """ Agent类，管理状态、事件、调用流程。 """
     def __init__(self, options: AgentOptions) -> None:
+        # 状态对象：记录当前系统提示词、模型、工具、消息历史等
         self._state = AgentState(
             system_prompt=options.system_prompt,
             model=options.model,
@@ -81,36 +90,52 @@ class Agent:
             tools=list(options.tools),
             messages=list(options.messages),
         )
-        self._options = options
-        self._listeners: list[AgentEventSink] = []
 
+        # Agent配置
+        self._options = options
+        
+        # 事件监听器列表：外部可以订阅 Agent 事件，获取消息更新、工具调用等信息
+        self._listeners: list[AgentEventSink] = []
+        
+        # 后台任务引用——用于 abort 取消
         self._stream_task: asyncio.Task[list[AgentMessage]] | None = None
+
+        # 
         self._steering_queue: list[AgentMessage] = []
         self._follow_up_queue: list[AgentMessage] = []
 
-    @property
+
+    # NOTE @property把一个方法“伪装”成属性来访问。
+    @property 
     def state(self) -> AgentState:
+        """ 获取 Agent 的当前状态。 """
         return self._state
 
     def set_system_prompt(self, system_prompt: str) -> None:
+        """ 设置系统提示词。 """
         self._state.system_prompt = system_prompt
 
     def set_tools(self, tools: list[AgentTool]) -> None:
+        """ 设置可用工具列表。 """
         self._state.tools = list(tools)
 
     def set_messages(self, messages: list[AgentMessage]) -> None:
+        """ 设置消息历史。 """
         self._state.messages = list(messages)
 
     def add_steering_message(self, message: AgentMessage) -> None:
+        """ 添加引导消息。 """
         self._steering_queue.append(message)
 
     def add_follow_up_message(self, message: AgentMessage) -> None:
+        """ 添加跟进消息。 """
         self._follow_up_queue.append(message)
 
     def clear_error(self) -> None:
         self._state.error = None
 
     def subscribe(self, listener: AgentEventSink) -> Callable[[], None]:
+        """订阅 Agent 事件。返回一个"取消订阅"的函数。"""
         self._listeners.append(listener)
 
         def _unsubscribe() -> None:
@@ -120,9 +145,12 @@ class Agent:
         return _unsubscribe
 
     async def prompt(self, message: str | UserMessage, images: list[str] | None = None) -> list[AgentMessage]:
+        """ 发起对话 """
+        # 防止重复调用，一次只能跑一个对话
         if self._state.is_streaming:
             raise RuntimeError("Agent is already running")
-
+        
+        # 字符串包装成 UserMessage 对象
         if isinstance(message, str):
             content: list[TextContent | ImageContent] = [TextContent(text=message)]
             for image in images or []:
@@ -143,14 +171,17 @@ class Agent:
             await self._stream_task
 
     def abort(self) -> None:
+        """ 中断当前对话，让正在 `await` 的地方抛出 `CancelledError`。 """
         if self._stream_task is not None and not self._stream_task.done():
             self._stream_task.cancel()
 
     async def _start_run(self, prompts: list[AgentMessage], continue_mode: bool) -> list[AgentMessage]:
-        self._state.is_streaming = True
-        self._state.stream_message = None
-        self._state.error = None
+        """ 启动Agent_loop循环 """
+        self._state.is_streaming = True  # 标记正在流式输出
+        self._state.stream_message = None # 清除当前流式消息
+        self._state.error = None # 清除错误信息
 
+        # 循环配置
         cfg = AgentLoopConfig(
             model=self._state.model,
             convert_to_llm=self._options.convert_to_llm,
@@ -165,23 +196,26 @@ class Agent:
             session_id=self._options.session_id,
         )
 
+        # 构造上下文对象
         context = AgentContext(
             system_prompt=self._state.system_prompt,
             messages=list(self._state.messages),
             tools=list(self._state.tools),
         )
 
+        # 是否继续之前对话
         if continue_mode:
             coro = run_agent_loop_continue(context=context, config=cfg, emit=self._dispatch_event)
         else:
             coro = run_agent_loop(prompts=prompts, context=context, config=cfg, emit=self._dispatch_event)
 
+        # 创建后台任务执行循环，保存引用以便中断
         self._stream_task = asyncio.create_task(coro)
         try:
             new_messages = await self._stream_task
-            self._state.messages.extend(new_messages)
+            self._state.messages.extend(new_messages) # 把新消息追加到历史
             return new_messages
-        except asyncio.CancelledError:
+        except asyncio.CancelledError: # 用户主动取消
             self._state.error = "aborted"
             raise
         except Exception as exc:

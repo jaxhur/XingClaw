@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from .types import Model
 
+# 模型注册表
 _MODELS: dict[str, dict[str, Model]] = {
+    # anthropic provider 
     "anthropic": {
         "claude-sonnet-4-5": Model(
             id="claude-sonnet-4-5",
@@ -31,6 +33,7 @@ _MODELS: dict[str, dict[str, Model]] = {
             max_tokens=8192,
         ),
     },
+    # openai provider
     "openai-standard": {
         "gpt-4o-mini": Model(
             id="gpt-4o-mini",

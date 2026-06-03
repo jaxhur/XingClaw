@@ -14,17 +14,23 @@ from typing import Callable
 from .event_stream import AssistantMessageEventStream
 from .types import Context, Model, SimpleStreamOptions, StreamOptions
 
-StreamFn = Callable[[Model, Context, StreamOptions | None], AssistantMessageEventStream]
-SimpleStreamFn = Callable[[Model, Context, SimpleStreamOptions | None], AssistantMessageEventStream]
 
+# 两个函数签名约束，类似Java的接口
+# StreamFn 是完整流式调用函数，SimpleStreamFn 是简化流式调用函数。
+# StreamFn接收3个参数，返回AssistantMessageEventStream
+StreamFn = Callable[[Model, Context, StreamOptions | None], AssistantMessageEventStream]
+# SimpleStreamFn接收3个参数，返回AssistantMessageEventStream
+SimpleStreamFn = Callable[[Model, Context, SimpleStreamOptions | None], AssistantMessageEventStream]
 
 @dataclass
 class ApiProvider:
-    api: str
-    stream: StreamFn
-    stream_simple: SimpleStreamFn
+    """ 保存某个 API 协议的名称、这个协议对应的两个调用函数 """
+    api: str # 协议标识，如 "anthropic-messages"
+    stream: StreamFn # 完整流式调用函数
+    stream_simple: SimpleStreamFn # 简化流式调用函数
 
 
+# API 协议实现注册表：根据 API 协议名分发到具体请求实现函数的注册表。
 _REGISTRY: dict[str, ApiProvider] = {}
 
 

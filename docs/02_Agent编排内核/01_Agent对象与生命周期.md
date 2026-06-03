@@ -1,18 +1,8 @@
-# 01 Agent 对象与生命周期
+Agent 对象与生命周期：`src/agent_core/agent.py`
 
-> 对应源码：`src/agent_core/agent.py`
+- 用户prompt、准备上下文、调用LLM+工具、返回结果、消息历史
 
-## 先不看代码——用"餐厅大厨"来理解
 
-想象你去一家高级餐厅。大厨（Agent）有以下职责：
-
-1. **接单**：顾客说"我要一份红烧肉"（用户 prompt）
-2. **准备**：大厨脑子里规划——需要五花肉、酱油、糖...（准备上下文）
-3. **做菜**：开火、炒糖色、放肉、焖煮...（调用 LLM + 工具）
-4. **上菜**：装盘端上桌（返回结果）
-5. **记录**：把菜谱记在笔记本上，下次来了还能知道之前做过什么（消息历史）
-
-`Agent` 类就是这个"大厨"的封装。它管理整个"接单→做菜→上菜"的生命周期。
 
 ## Agent 的生命周期
 
@@ -29,9 +19,11 @@ stateDiagram-v2
     Aborted --> Running: 再次 prompt()
 ```
 
+
+
 ## 源码精读
 
-### 1. 创建 Agent 的配置（`AgentOptions`）
+### 1. 创建 Agent 的配置`AgentOptions`
 
 ```python
 @dataclass
@@ -53,6 +45,13 @@ class AgentOptions:
 ```
 
 ### 2. Agent 类的核心结构
+
+**关键理解**：`Agent` 本质上是一个**状态机**，它维护着：
+
+- 当前状态（`AgentState`）：在跑还是空闲？有没有出错？
+- 配置（`AgentOptions`）：用什么模型、什么工具、什么钩子
+- 监听器（`_listeners`）：谁在听它的事件
+- 正在跑的任务（`_stream_task`）：可以中断的后台任务
 
 ```python
 class Agent:
@@ -77,13 +76,13 @@ class Agent:
         self._follow_up_queue: list[AgentMessage] = []
 ```
 
-**关键理解**：`Agent` 本质上是一个**状态机**，它维护着：
-- 当前状态（`AgentState`）：在跑还是空闲？有没有出错？
-- 配置（`AgentOptions`）：用什么模型、什么工具、什么钩子
-- 监听器（`_listeners`）：谁在听它的事件
-- 正在跑的任务（`_stream_task`）：可以中断的后台任务
+
 
 ### 3. prompt 方法——发起对话
+
+**入参**：`message` 可以是字符串（最常用），也可以是已经构造好的 `UserMessage`
+
+**出参**：本次对话产生的所有新消息（包括用户消息、助手回复、工具结果等）
 
 ```python
 async def prompt(self, message: str | UserMessage, images=None) -> list[AgentMessage]:
@@ -104,8 +103,7 @@ async def prompt(self, message: str | UserMessage, images=None) -> list[AgentMes
     return await self._start_run(prompts=[prompt], continue_mode=False)
 ```
 
-**入参**：`message` 可以是字符串（最常用），也可以是已经构造好的 `UserMessage`
-**出参**：本次对话产生的所有新消息（包括用户消息、助手回复、工具结果等）
+
 
 ### 4. _start_run 方法——真正启动循环的地方
 
@@ -177,6 +175,8 @@ unsub()  # 不想听了，取消订阅
 
 这是经典的**观察者模式**——Agent 是"发布者"，listener 是"订阅者"。
 
+
+
 ### 6. abort 方法——中断运行
 
 ```python
@@ -186,6 +186,8 @@ def abort(self) -> None:
 ```
 
 `asyncio.Task.cancel()` 会让正在 `await` 的地方抛出 `CancelledError`。
+
+
 
 ## 小白避坑指南
 

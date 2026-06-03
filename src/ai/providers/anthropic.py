@@ -3,6 +3,7 @@ from __future__ import annotations
 """
 Anthropic Messages API 流式 provider。
 
+把 Anthropic 的 SSE 流式响应，转换成项目内部统一的事件流 AssistantMessageEventStream。
 实现思路：
 1) 读取 SSE 的 event/data；
 2) 按 content block 组装 text/thinking/toolCall；
@@ -34,30 +35,44 @@ def stream_anthropic(
     context: Context,
     options: StreamOptions | None = None,
 ) -> AssistantMessageEventStream:
-    stream = AssistantMessageEventStream()
-    resolved_options = options or StreamOptions()
+    """ 
 
+    """
+
+    # 1) 创建事件流容器
+    stream = AssistantMessageEventStream()
+    # 解析选项，环境变量，模型配置等，准备调用 API 需要的参数
+    resolved_options = options or StreamOptions() # 如果 options 是 None，使用默认 StreamOptions 对象
+
+    # 2) 后台异步任务：执行 API 调用，处理响应，推送事件
     async def _run() -> None:
+
+        # 1) 空的最终消息 out
         out = empty_assistant_message(api=model.api, provider=model.provider, model=model.id)
         try:
+            # 2) 读取 API key，组装 Anthropic 请求头和 payload
+            # API key：调用选项 > 环境变量
             api_key = resolved_options.api_key or get_env_api_key(model.provider)
             if not api_key:
                 raise RuntimeError("Missing ANTHROPIC_API_KEY")
-
+            # header
             headers = {
                 "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
+                "anthropic-version": "2023-06-01", # FIXME 
                 "Content-Type": "application/json",
             }
+            # 模型配置和调用选项的 header 都要加上，调用选项优先级更高
             if model.headers:
-                headers.update(model.headers)
+                headers.update(model.headers) 
             if resolved_options.headers:
                 headers.update(resolved_options.headers)
 
+            # payload
             payload: dict[str, Any] = {
                 "model": model.id,
                 "max_tokens": resolved_options.max_tokens or model.max_tokens,
-                "messages": to_anthropic_messages(context),
+                # 把统一 Context 转成 Anthropic Messages API 的 messages 列表
+                "messages": to_anthropic_messages(context), 
                 "stream": True,
             }
             if context.system_prompt:
@@ -68,6 +83,7 @@ def stream_anthropic(
             if tools:
                 payload["tools"] = tools
 
+            # 3) httpx.AsyncClient发起请求，处理 SSE 流式响应
             timeout = resolved_options.timeout_seconds or None
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream(
@@ -76,7 +92,9 @@ def stream_anthropic(
                     headers=headers,
                     json=payload,
                 ) as response:
+                    # 检查响应状态码，抛出异常会被外层捕获并推送 error 事件
                     response.raise_for_status()
+                    # 连接成功后先推一个统一的 start 事件
                     stream.push({"type": "start", "partial": out})
 
                     current_event: str | None = None
@@ -85,20 +103,24 @@ def stream_anthropic(
                     thinking_blocks: dict[int, ThinkingContent] = {}
                     tool_blocks: dict[int, ToolCall] = {}
                     tool_partial_json: dict[int, str] = {}
-
+                    
+                    # 4) 核心循环：逐行读取 SSE 响应，解析 event/data，更新 out 和 block 状态，推送增量事件
                     async for raw_line in response.aiter_lines():
                         line = raw_line.strip()
                         if not line:
                             continue
-
+                        
+                        # 遇到 event: 记录当前事件类型
                         if line.startswith("event:"):
                             current_event = line[len("event:") :].strip()
                             continue
                         if not line.startswith("data:"):
                             continue
-
+                        
+                        # 遇到 data: 解析 JSON，然后按 Anthropic 事件类型分发处理。
                         data = json.loads(line[len("data:") :].strip())
 
+                        # 根据事件类型组装消息
                         if current_event == "message_start":
                             message = data.get("message", {})
                             out.response_id = message.get("id")
@@ -106,6 +128,7 @@ def stream_anthropic(
                             out.usage.input = usage.get("input_tokens", out.usage.input)
 
                         elif current_event == "content_block_start":
+                            """ 新内容块开始（文本/思考/工具调用） """
                             current_index = data.get("index", 0)
                             block = data.get("content_block", {})
                             block_type = block.get("type")
@@ -132,7 +155,8 @@ def stream_anthropic(
                                     {"type": "toolcall_start", "contentIndex": len(out.content) - 1, "partial": out}
                                 )
 
-                        elif current_event == "content_block_delta":
+                        elif current_event == "content_block_delta": 
+                            """ 内容增量 """
                             idx = data.get("index", current_index if current_index is not None else 0)
                             delta = data.get("delta", {})
                             delta_type = delta.get("type")
@@ -210,7 +234,7 @@ def stream_anthropic(
                             usage = data.get("usage", {})
                             out.stop_reason = _map_stop_reason(delta.get("stop_reason"))
                             out.usage.output = usage.get("output_tokens", out.usage.output)
-
+                    # 全部读完，推送done事件
                     stream.push({"type": "done", "reason": out.stop_reason, "message": out})
                     stream.end(out)
         except Exception as exc:
@@ -219,7 +243,10 @@ def stream_anthropic(
             stream.push({"type": "error", "reason": "error", "error": out})
             stream.end(out)
 
+    # NOTE 后台异步任务异步执行_run()
+    # NOTE python的异步机制:异步任务能改 stream，是因为它和调用方持有同一个对象引用；不是修改另一个线程的局部变量。
     asyncio.create_task(_run())
+    # 3) 立即返回事件流（不等结果）
     return stream
 
 

@@ -1,21 +1,111 @@
-# 02 Provider 注册与分发机制
+# Provider 注册与分发机制
 
-> 对应源码：`src/ai/api_registry.py`、`src/ai/models.py`、`src/ai/env_api_keys.py`、`src/ai/providers/register_builtins.py`
+Provider 注册与分发机制：`ai/api_registry.py`、`ai/models.py`、`ai/env_api_keys.py`、`ai/providers/register_builtins.py`
 
-## 先不看代码——用"外卖平台"来理解
+- 不同AI提供商有不同的API协议（Anthropic Messages、OpenAI Chat Completions），由 `api_registry.py` 中的 `_REGISTRY` 存储`API 协议名 -> 对应的协议调用实现`，即存储**不同类型的API协议的请求方式**；然后，由`stream.py` 中根据模型配置的 `model.api` 去 `_REGISTRY`查出api对应的调用实现
+- **统一调用入口**：上层 Agent 不直接关心具体 API 协议，调用方只需要调用统一的 stream()、complete()、stream_simple()
+- **降低扩展成本**：新增协议时，只需要实现新的 stream / stream_simple 并注册，不需要改调用方代码。
 
-假设你开了一个外卖平台，平台上接入了三家餐厅：兰州拉面、黄焖鸡、沙县小吃。
+---
 
-- 每家餐厅的**菜单不同**（模型列表）
-- 每家餐厅的**下单方式不同**（API 协议）——有的用微信接单，有的用打电话
-- 你需要一个**登记簿**（注册表），记录每家餐厅用什么方式接单
-- 用户下单时，平台根据用户选的餐厅，**自动找到正确的接单方式**（分发）
+`_REGISTRY`示例：stream.py 会，也就是 stream_openai_compatible
 
-在 XingClaw 中：
-- "餐厅" = AI 厂商（Anthropic、OpenAI、智谱等）
-- "下单方式" = API 协议（Anthropic Messages、OpenAI Chat Completions）
-- "登记簿" = `api_registry.py` 中的 `_REGISTRY` 字典
-- "自动分发" = `stream.py` 中根据 `model.api` 查表调用
+```python
+_REGISTRY = {
+    "anthropic-messages": ApiProvider(
+        api="anthropic-messages", # # 协议标识
+        stream=stream_anthropic,
+        stream_simple=stream_simple_anthropic,
+    ),
+
+    "openai-standard": ApiProvider(
+        api="openai-standard",
+        stream=stream_openai_compatible,
+        stream_simple=stream_simple_openai_compatible,
+    ),
+}
+```
+
+某个模型配置：
+
+```python
+Model(
+    id="glm-4",
+    api="openai-standard",
+    provider="zhipu",
+    base_url="https://open.bigmodel.cn/api/paas/v4",
+    ...
+)
+```
+
+`stream.py`会用`model.api == "openai-standard"`，去 _REGISTRY 里找到`stream_openai_compatible`，然后调用它。model.provider == "zhipu" 则主要给具体实现内部用来找对应的 API Key。
+
+
+
+----
+
+## 添加新模型
+
+不需要改`_REGISTRY`，只需要在models.py中的`_MODELS`里加一个 Model(...)：
+
+- **前提**：模型使用的协议已经存在，比如anthropic-messages、openai-standard
+
+```python
+"qwen-max": Model(
+    id="qwen-max",
+    name="Qwen Max",
+    api="openai-standard",
+    provider="qwen",
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    reasoning=False,
+    input=["text", "image"],
+    context_window=128_000,
+    max_tokens=8192,
+)
+```
+
+如果provider="qwen"，还需要在`env_api_keys.py`里支持读取它的 Key：
+
+- 没必要，一般厂商都是支持anthropic-messages、openai-standard的
+
+```python
+if provider == "qwen":    
+    return os.getenv("QWEN_API_KEY")
+```
+
+
+
+## 添加新API协议
+
+新增一个API协议`api="my-new-api"`
+
+1、在 src/ai/providers/ 下新增协议实现文件`my_new_api.py`，实现两个函数
+
+```python
+def stream_my_new_api(model, context, options):
+    ...
+
+def stream_simple_my_new_api(model, context, options):
+    ...
+```
+
+2、在`register_builtins.py` 里，调用`register_api_provider(...)` 注册进去
+
+- 调用方的代码`stream.py`完全不用改，这就是"开闭原则"——**对扩展开放，对修改关闭。**
+
+```python
+from .my_new_api import stream_my_new_api, stream_simple_my_new_api
+
+register_api_provider(
+    ApiProvider(
+        api="my-new-api",
+        stream=stream_my_new_api,
+        stream_simple=stream_simple_my_new_api,
+    )
+)
+```
+
+
 
 ## 整体流程图
 
@@ -37,39 +127,60 @@ flowchart TD
 
 ## 源码精读
 
-### 1. 注册表：最简单但最重要的模式（`api_registry.py`）
+### API协议实现注册表`api_registry.py`
+
+API协议实现注册表`api_registry.py`
 
 ```python
-# 注册表的核心数据结构——就是一个字典
-_REGISTRY: dict[str, ApiProvider] = {}
-
+# 两个函数签名约束，类似Java的接口
+# StreamFn 是完整流式调用函数，SimpleStreamFn 是简化流式调用函数。
+# StreamFn接收3个参数，返回AssistantMessageEventStream
+StreamFn = Callable[[Model, Context, StreamOptions | None], AssistantMessageEventStream]
+# SimpleStreamFn接收3个参数，返回AssistantMessageEventStream
+SimpleStreamFn = Callable[[Model, Context, SimpleStreamOptions | None], AssistantMessageEventStream]
 
 @dataclass
 class ApiProvider:
-    """每个 provider 需要提供三样东西。"""
-    api: str                    # 协议标识，如 "anthropic-messages"
-    stream: StreamFn            # 原始流式调用函数
-    stream_simple: SimpleStreamFn  # 简化版流式调用函数
+    """ 保存某个 API 协议的名称、这个协议对应的两个调用函数 """
+    api: str # 协议标识，如 "anthropic-messages"
+    stream: StreamFn # 完整流式调用函数
+    stream_simple: SimpleStreamFn # 简化流式调用函数
+
+
+# API 协议实现注册表：根据 API 协议名分发到具体请求实现函数的注册表。
+_REGISTRY: dict[str, ApiProvider] = {}
 
 
 def register_api_provider(provider: ApiProvider) -> None:
-    """往字典里塞一条记录——就这么简单。"""
+    """注册或覆盖某个 api 的 provider。"""
     _REGISTRY[provider.api] = provider
 
 
 def get_api_provider(api: str) -> ApiProvider | None:
-    """从字典里取一条记录。"""
+    """按 api 获取 provider；不存在返回 None。"""
     return _REGISTRY.get(api)
+
+
+def clear_api_providers() -> None:
+    """清空注册中心（通常用于测试或重置）。"""
+    _REGISTRY.clear()
+
 ```
 
-**为什么要用注册表模式？** 因为以后你想支持新的 AI 厂商时，不需要修改任何已有代码。只需要：
 
-1. 写一个新的 `stream_xxx` 函数
-2. 调用 `register_api_provider(...)` 注册进去
 
-调用方的代码（`stream.py`）完全不用改。这就是"开闭原则"——**对扩展开放，对修改关闭。**
+### 注册Provider`src/ai/providers/register_builtins.py`
 
-### 2. 内置 Provider 的注册（`register_builtins.py`）
+文件最后那行 `register_builtin_api_providers()` 不在任何函数或 class 里面——它是"模块级代码"，在 `import` 时自动执行。这保证了只要你 `import ai`，两个 provider 就已经注册好了。
+
+- 执行顺序：
+  - import ai
+      -> 执行 `src/ai/__init__.py`
+      -> 调用 register_builtin_api_providers()
+      -> 导入 src/ai/providers/register_builtins.py
+      -> 执行该文件顶层代码
+      -> 文件末尾调用 register_builtin_api_providers()
+      -> provider 被注册
 
 ```python
 def register_builtin_api_providers() -> None:
@@ -96,71 +207,129 @@ def register_builtin_api_providers() -> None:
 register_builtin_api_providers()
 ```
 
-**小白理解要点**：文件最后那行 `register_builtin_api_providers()` 不在任何函数或 class 里面——它是"模块级代码"，在 `import` 时自动执行。这保证了只要你 `import ai`，两个 provider 就已经注册好了。
 
-### 3. 模型注册表（`models.py`）
+
+### 协议具体的流式实现`src/ai/providers/anthropic.py` `src/ai/providers/openai_compatible.py`
+
+
+
+
+
+### 模型注册表`models.py`
 
 ```python
-# 二级字典：第一级是 provider 名，第二级是 model ID
+# 模型注册表
 _MODELS: dict[str, dict[str, Model]] = {
+    # anthropic provider 
     "anthropic": {
         "claude-sonnet-4-5": Model(
             id="claude-sonnet-4-5",
             name="Claude Sonnet 4.5",
-            api="anthropic-messages",       # 走 Anthropic 协议
-            provider="anthropic",            # 用 Anthropic 的 API Key
+            api="anthropic-messages",
+            provider="anthropic",
             base_url="https://api.anthropic.com",
-            reasoning=True,                  # 支持思考模式
-            context_window=200_000,          # 能记住 20 万 token
-            max_tokens=8192,                 # 单次最多回复 8192 token
-            ...
+            reasoning=True,
+            input=["text", "image"],
+            context_window=200_000,
+            max_tokens=8192,
         ),
         "glm-4.7": Model(
             id="glm-4.7",
             name="GLM-4.7",
-            api="anthropic-messages",       # 智谱也走 Anthropic 协议！
+            api="anthropic-messages",
             provider="anthropic",
-            base_url="https://open.bigmodel.cn/api/anthropic",  # 但 URL 不同
-            ...
+            base_url="https://open.bigmodel.cn/api/anthropic",
+            reasoning=True,
+            input=["text", "image"],
+            context_window=200_000,
+            max_tokens=8192,
         ),
     },
+    # openai provider
     "openai-standard": {
         "gpt-4o-mini": Model(
             id="gpt-4o-mini",
-            api="openai-standard",          # 走 OpenAI 协议
+            name="GPT-4o mini",
+            api="openai-standard",
             provider="openai-standard",
             base_url="https://api.openai.com/v1",
-            ...
-        )
+            reasoning=False,
+            input=["text", "image"],
+            context_window=128_000,
+            max_tokens=16_384,
+        ),
+        "deepseek-v4-pro": Model(
+            id="deepseek-v4-pro",
+            name="DeepSeek V4 Pro",
+            api="openai-standard",
+            provider="openai-standard",
+            base_url="https://api.deepseek.com",
+            reasoning=True,
+            input=["text", "image"],
+            context_window=200_000,
+            max_tokens=8192,
+        ),
     },
 }
 
 
 def get_model(provider: str, model_id: str) -> Model:
-    """获取模型配置。用法：get_model("anthropic", "claude-sonnet-4-5")"""
+    """获取单个模型，找不到会抛 KeyError。"""
     try:
         return _MODELS[provider][model_id]
     except KeyError as exc:
         raise KeyError(f"Unknown model: {provider}/{model_id}") from exc
+
+
+def get_models(provider: str) -> list[Model]:
+    """获取某 provider 的全部模型。"""
+    return list(_MODELS.get(provider, {}).values())
+
+
+def get_providers() -> list[str]:
+    """列出当前内置 provider。"""
+    return list(_MODELS.keys())
+
 ```
 
-**注意看 GLM-4.7 的配置**：它的 `api` 是 `"anthropic-messages"`，说明智谱提供了兼容 Anthropic 的 API。这就是"统一接口"的威力——只要协议兼容，新增一个模型就只是加一段配置而已。
 
-### 4. API Key 读取（`env_api_keys.py`）
+
+### 读取API Key`env_api_keys.py`
+
+
+
+不同的供应商对应不同的环境变量名，`os.getenv("XXX")` 从系统环境变量里读取值。
 
 ```python
+"""
+统一读取环境变量中的 API Key。
+"""
+
+import os
+
+
 def get_env_api_key(provider: str) -> str | None:
     """根据 provider 名，从环境变量里找对应的 API Key。"""
+    # Anthropic provider
     if provider == "anthropic":
+        # return "9d96c1c9f4cb41d1aa6f55b0641478bc.stGL7zCVisZi0I68"
         return os.getenv("ANTHROPIC_API_KEY")
-    if provider in {"openai", "openai-compatible", "openai-standard"}:
+    # OpenAI 标准/兼容 provider
+    if provider in {"openai", "openai-standard"}:
         return os.getenv("OPENAI_API_KEY")
     return None
 ```
 
-逻辑很直白：不同的供应商对应不同的环境变量名。`os.getenv("XXX")` 就是从系统环境变量里读取值。
 
-## 两个注册表是怎么协作的？
+
+
+
+## 两个注册表`_REGISTRY、_MODEL`是怎么协作的？
+
+**两层查找**。
+
+1. 第一层：通过 `provider + model_id` 找到 `Model` 对象
+2. 第二层：通过 `Model.api` 找到对应的 `ApiProvider` 实现
 
 ```mermaid
 sequenceDiagram
@@ -180,11 +349,149 @@ sequenceDiagram
     Provider-->>Stream: 返回事件流
 ```
 
-关键理解：**两层查找**。
-1. 第一层：通过 `provider + model_id` 找到 `Model` 对象
-2. 第二层：通过 `Model.api` 找到对应的 `ApiProvider` 实现
+_MODELS：有哪些模型配置
+
+```
+_MODELS: dict[str, dict[str, Model]] = {
+    "anthropic": {
+        "claude-sonnet-4-5": Model(api="anthropic-messages", provider="anthropic", ...),
+        "glm-4.7": Model(api="anthropic-messages", provider="anthropic", ...),
+    },
+    "openai-standard": {
+        "gpt-4o-mini": Model(api="openai-standard", provider="openai-standard", ...),
+        "deepseek-v4-pro": Model(api="openai-standard", provider="openai-standard", ...),
+    },
+}
+```
+
+_REGISTRY：某种 API 协议该用哪个实现函数
+
+```
+_REGISTRY: dict[str, ApiProvider] = {
+    "anthropic-messages": ApiProvider(
+        api="anthropic-messages",
+        stream=stream_anthropic,
+        stream_simple=stream_simple_anthropic,
+    ),
+    "openai-standard": ApiProvider(
+        api="openai-standard",
+        stream=stream_openai_compatible,
+        stream_simple=stream_simple_openai_compatible,
+    ),
+}
+```
+
+
 
 ## 小白避坑指南
+
+### `__main__.py`和__`init__py`的作用是什么，怎来的？自己写的吗？还是说自动生成的？
+
+`__init__.py` 和 __`main__.py` 都是 Python 约定识别的特殊文件，一般是项目作者自己写的，不是 Python 运行时自动生成的。
+
+- `__init__.py`：这个目录作为“包”被导入时执行，常用于统一导出、初始化注册。
+- `__main__.py`：这个包被 python -m 包名 运行时执行，常用于启动 CLI 或服务。
+
+`__init__.py` 的作用是让**目录成为一个 Python 包并定义“导入这个包时发生什么”**
+
+`src/ai/__init__.py`不只是标记包，它还把 complete、stream、Model、Provider 等对象统一导出，这样外部可以写：
+
+```
+from ai import stream, Model
+```
+
+而不用写更长的：
+
+```
+from ai.stream import stream 
+from ai.types import Model
+```
+
+同时它最后还调用了 register_builtin_api_providers()，所以 import ai 时会顺便注册内置 provider。你看到的确实是手写逻辑。
+
+`__main__.py` 的作用是**让一个包可以被 python -m 包名 直接运行**。比如 src/coding_agent/__main__.py (line 1) 内容是：
+
+```python
+from .cli import main raise 
+	SystemExit(main())
+```
+
+所以执行：
+
+```
+python -m coding_agent
+```
+
+就等价于进入 coding_agent.cli.main()。类似地，src/im/__main__.py (line 1) 也是为了支持：
+
+```
+python -m im
+```
+
+
+
+### 统一导出包
+
+统一导出：把分散在不同 .py 文件里的方法，集中挂到 ai 包的入口上；complete、stream、Model、Provider 实际定义在别的文件里，但 `ai/__init__.py` 把它们集中暴露出来，让使用者可以从 ai 这个统一入口直接导入。
+
+比如原本这些对象可能分别在不同模块里：
+
+```python
+# src/ai/stream.py
+def stream(...):
+    ...
+
+def complete(...):
+    ...
+    
+# src/ai/types.py
+class Model:
+    ...
+
+class Provider:
+    ...
+```
+
+如果没有在 `src/ai/__init__.py` 里统一导出，别人使用时要这样写：
+
+```
+from ai.stream import stream, complete
+from ai.types import Model, Provider
+```
+
+但你的 `src/ai/__init__.py` 里写了类似这样的代码：
+
+```
+from .stream import complete, stream
+from .types import Model, Provider
+```
+
+于是外部就可以直接写：
+
+```
+from ai import stream, complete, Model, Provider
+```
+
+文件里的 `__all__ `是在声明：
+
+```
+__all__ = [
+    "complete",
+    "stream",
+    "Model",
+    "Provider",
+]
+```
+
+它主要影响：
+
+```
+from ai import *
+```
+
+表示 *** 导入时允许导出哪些名字**。它也有一点“告诉别人这些是公共 API”的文档作用。
+
+
 
 ### 坑 1：`api` 和 `provider` 傻傻分不清
 

@@ -140,11 +140,14 @@ async for event in s:
 asyncio.run(main)
 ```
 
-
-
 ## 问题
 
 我使用的是deepseek，我问了好几遍，一直回答他是claude？因为有系统提示词吗？还是什么原因？
 
 <img src="img/03_运行quickstart_img/image-20260602205057307.png" alt="image-20260602205057307" style="zoom:80%;" />
 
+让AI单独写了个测试，即使完全绕开项目代码，直接打 DeepSeek API，response_model 也显示是 deepseek-v4-pro，但模型内容仍然自称 Claude。
+
+应该是提示词的原因，之前问他【"introduce your model in 20 words"】，回答是cluade，问他【"What model are you?"】，就回复是deepseek了
+
+<img src="img/03_运行quickstart_img/image-20260602211932052.png" alt="image-20260602211932052" style="zoom: 80%;" />

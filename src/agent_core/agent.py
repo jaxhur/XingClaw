@@ -56,7 +56,7 @@ def _resolve_reasoning(thinking_level: str) -> ThinkingLevel | None:
 
 @dataclass
 class AgentOptions:
-    """ Agent配置 """
+    """ 创建Agent时传入的配置 """
     model: Model # 使用的模型
     system_prompt: str = "" # 系统提示词
     tools: list[AgentTool] = field(default_factory=list) # 可用工具列表
@@ -82,9 +82,9 @@ class AgentOptions:
 class Agent:
     """ Agent类，管理状态、事件、调用流程。 """
     def __init__(self, options: AgentOptions) -> None:
-        # 状态对象：记录当前系统提示词、模型、工具、消息历史等
+        # 状态对象：系统提示词、模型、思考程度、工具、消息历史
         self._state = AgentState(
-            system_prompt=options.system_prompt,
+            system_prompt=options.system_prompt, 
             model=options.model,
             thinking_level=options.thinking_level,  # type: ignore[arg-type]
             tools=list(options.tools),

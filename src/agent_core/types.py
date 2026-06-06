@@ -32,7 +32,7 @@ AgentMessage = Message
 
 @dataclass
 class AgentToolResult:
-    """工具执行产物：内容块 + 细节对象（UI/日志可用）。"""
+    """工具执行的返回结果：内容块 + 细节对象（UI/日志可用）。"""
 
     content: list[TextContent | ImageContent]
     details: Any = None
@@ -54,7 +54,7 @@ class ToolExecuteFn(Protocol):
 @dataclass
 class AgentTool:
     """
-    Agent 可执行工具定义。
+    Agent可执行工具
 
     注意：name/description/parameters 同时也会作为 LLM 可见的工具元信息。
     """

@@ -8,36 +8,54 @@
 from __future__ import annotations
 
 import asyncio
+from ai import AssistantMessage, TextContent
 from pathlib import Path
 
 from coding_agent import CreateAgentSessionOptions, create_agent_session
 
+def print_last_assistant(session, label: str) -> None:
+    """ 打印 session 中最后一个 AssistantMessage """
+    final = next((m for m in reversed(session.messages) if isinstance(m, AssistantMessage)), None)
+    if final is None:
+        print(label, "(no assistant message)")
+        return
+
+    text = "".join(
+        b.text for b in final.content if isinstance(b, TextContent)
+    ).strip()
+
+    print(label, text if text else "(empty)")
 
 async def main() -> None:
+    # 第一次，创建 session
     first = create_agent_session(
         CreateAgentSessionOptions(
             workspace_dir=Path.cwd(),
-            provider="anthropic",
-            model_id="glm-4.7",
+            provider="openai-standard",
+            model_id="deepseek-v4-pro",
             system_prompt="你是一个会话型助手。",
             thinking_level="minimal",
         )
     )
-    await first.prompt("请记住：我的最喜欢语言是 Python。")
+    await first.prompt("请记住：我的名字叫【丁真珍珠】")
+    print_last_assistant(first, "[first.assistant]")
+    # session_id
     sid = first.session_id
     print("[first.session_id]", sid)
     print("[first.message_count]", len(first.messages))
     first.close()
 
+    # 第二次，用 session_id 恢复历史
     second = create_agent_session(
         CreateAgentSessionOptions(
             workspace_dir=Path.cwd(),
-            session_id=sid,  # 不再重复传 model，工厂会从 meta 中恢复
+            session_id=sid,  
             thinking_level="minimal",
         )
     )
     print("[second.message_count.before]", len(second.messages))
-    await second.prompt("我最喜欢的语言是什么？")
+    await second.prompt("我的名字叫什么")
+    print_last_assistant(second, "[second.assistant]")
     print("[second.message_count.after]", len(second.messages))
     second.close()
 

@@ -40,6 +40,7 @@ def list_runtime_commands(session: AgentSession) -> list[RuntimeCommand]:
 
 
 def format_commands_for_help(session: AgentSession) -> str:
+    """ 格式化可用命令列表 """
     lines: list[str] = ["可用命令："]
     for item in list_runtime_commands(session):
         lines.append(f"- `/{item.name}` [{item.source}] {item.description}")

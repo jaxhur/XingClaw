@@ -11,16 +11,18 @@ from coding_agent import CreateAgentSessionOptions, RunOptions, create_agent_ses
 
 
 async def main() -> None:
+    # 创建会话
     session = create_agent_session(
         CreateAgentSessionOptions(
             workspace_dir=Path.cwd(),
-            provider="anthropic",
-            model_id="glm-4.7",
+            provider="openai-standard",
+            model_id="deepseek-v4-pro",
             system_prompt="你是一个简洁可靠的助手。",
             thinking_level="minimal",
         )
     )
     try:
+        # 没有传prompt，只传session
         await run(
             RunOptions(
                 mode="interactive",
